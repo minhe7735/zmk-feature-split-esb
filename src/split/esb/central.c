@@ -46,7 +46,7 @@ static void publish_events_work(struct k_work *work);
 
 K_WORK_DEFINE(publish_events, publish_events_work);
 
-uint8_t async_rx_buf[RX_BUFFER_SIZE / 2][2];
+uint8_t async_rx_buf[2][RX_BUFFER_SIZE / 2];
 
 static struct zmk_split_esb_async_state async_state = {
     .process_tx_work = &publish_events,

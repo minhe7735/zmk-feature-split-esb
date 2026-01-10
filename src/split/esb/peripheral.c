@@ -51,7 +51,7 @@ K_WORK_DEFINE(publish_commands, publish_commands_work);
 static void process_tx_cb(void);
 K_MSGQ_DEFINE(cmd_msg_queue, sizeof(struct zmk_split_transport_central_command), 3, 4);
 
-uint8_t async_rx_buf[RX_BUFFER_SIZE / 2][2];
+uint8_t async_rx_buf[2][RX_BUFFER_SIZE / 2];
 
 static struct zmk_split_esb_async_state async_state = {
     .rx_bufs = {async_rx_buf[0], async_rx_buf[1]},
