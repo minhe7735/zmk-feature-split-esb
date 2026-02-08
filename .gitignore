@@ -12,3 +12,6 @@ __pycache__
 
 # clangd
 src/.cache/
+
+# References
+references/

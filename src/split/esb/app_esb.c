@@ -49,13 +49,16 @@ uint8_t esb_addr_prefix[4] = DT_INST_PROP(0, addr_prefix);
 
 static app_esb_callback_t m_callback;
 
-// Define a buffer of payloads to store TX payloads in between timeslots
+// Define buffer of payloads to store TX payloads in between timeslots
 K_MSGQ_DEFINE(m_msgq_tx_payloads, sizeof(struct esb_payload), 
               CONFIG_ZMK_SPLIT_ESB_PROTO_MSGQ_ITEMS, 4);
 
 static app_esb_mode_t m_mode;
 static bool m_active = false;
 static bool m_enabled = false;
+
+// TX statistics tracking
+static esb_stats_t m_stats = {0};
 
 static int pull_packet_from_tx_msgq(void);
 
@@ -65,8 +68,17 @@ static void event_handler(struct esb_evt const *event) {
     app_esb_event_t m_event;
     switch (event->evt_id) {
         case ESB_EVENT_TX_SUCCESS:
-            // LOG_DBG("TX SUCCESS, tx_attempts: %d", event->tx_attempts);
-            // LOG_DBG("give d1");
+            // LOG_DBG("TX SUCCESS");
+            // Update statistics
+            m_stats.successful_transmissions++;
+            m_stats.total_transmissions++;
+            m_stats.last_tx_succeeded = true;
+            m_stats.last_tx_timestamp = k_uptime_get_32();
+            if (m_stats.total_transmissions > 0) {
+                m_stats.success_rate = (float)m_stats.successful_transmissions /
+                                       m_stats.total_transmissions * 100.0f;
+            }
+
             // Forward an event to the application
             m_event.evt_type = APP_ESB_EVT_TX_SUCCESS;
             m_callback(&m_event);
@@ -74,7 +86,18 @@ static void event_handler(struct esb_evt const *event) {
             break;
         case ESB_EVENT_TX_FAILED:
             LOG_WRN("TX FAILED, tx_attempts: %d", event->tx_attempts);
-            // esb_flush_tx(); // DOUH, had fixed @ 3.1.0-rc1, not ready yet.
+            // Update statistics
+            m_stats.failed_transmissions++;
+            m_stats.total_transmissions++;
+            m_stats.retry_count++;
+            m_stats.last_tx_succeeded = false;
+            m_stats.last_tx_timestamp = k_uptime_get_32();
+            if (m_stats.total_transmissions > 0) {
+                m_stats.success_rate = (float)m_stats.successful_transmissions /
+                                       m_stats.total_transmissions * 100.0f;
+            }
+            // Flush RX buffer on failure to prevent radio jam
+            esb_flush_rx();
             // Forward an event to the application
             m_event.evt_type = APP_ESB_EVT_TX_FAIL;
             m_callback(&m_event);
@@ -84,6 +107,12 @@ static void event_handler(struct esb_evt const *event) {
             // LOG_DBG("RX SUCCESS");
             struct esb_payload rx_payload;
             while (esb_read_rx_payload(&rx_payload) == 0) {
+            uint8_t buf[CONFIG_ESB_MAX_PAYLOAD_LENGTH];
+            if (esb_read_rx_payload(&rx_payload) == 0) {
+                // Track RX stats
+                m_stats.total_received++;
+                m_stats.last_rx_timestamp = k_uptime_get_32();
+
                 // LOG_DBG("Chunk %d, len: %d", rx_payload.pid, rx_payload.length);
                 uint8_t buf[CONFIG_ESB_MAX_PAYLOAD_LENGTH];
                 memcpy(buf, rx_payload.data, rx_payload.length);
@@ -93,6 +122,12 @@ static void event_handler(struct esb_evt const *event) {
                 m_event.data_length = rx_payload.length;
                 m_callback(&m_event);
             }
+            break;
+        default:
+            LOG_WRN("Unknown ESB event: %d", event->evt_id);
+            // Clear all buffers on unknown events as safety measure
+            esb_flush_tx();
+            esb_flush_rx();
             break;
     }
 }
@@ -141,6 +176,9 @@ static int esb_initialize(app_esb_mode_t mode) {
     config.mode = (mode == APP_ESB_MODE_PTX) ? ESB_MODE_PTX : ESB_MODE_PRX;
     config.tx_mode = ESB_TXMODE_MANUAL_START;
     config.selective_auto_ack = true;
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ESB_TX_POWER_8DBM)
+    config.tx_output_power = ESB_TX_POWER_8DBM;
+#endif
 
     err = esb_init(&config);
 
@@ -162,6 +200,14 @@ static int esb_initialize(app_esb_mode_t mode) {
     if (err) {
         return err;
     }
+
+    // Set RF channel (configurable via Kconfig)
+    err = esb_set_rf_channel(CONFIG_ZMK_SPLIT_ESB_RF_CHANNEL);
+    if (err) {
+        LOG_ERR("ESB set RF channel failed: %d", err);
+        return err;
+    }
+    LOG_INF("ESB RF channel set to %d", CONFIG_ZMK_SPLIT_ESB_RF_CHANNEL);
 
     NVIC_SetPriority(RADIO_IRQn, 0);
 
@@ -185,23 +231,15 @@ static int pull_packet_from_tx_msgq(void) {
         return -EBUSY;
     }
 
+    // Check if there's a message to send
     if (k_msgq_peek(&m_msgq_tx_payloads, &tx_payload) == 0) {
+
+        // Flush TX buffer before write to prevent buildup
+        esb_flush_tx();
+
         ret = esb_write_payload(&tx_payload);
 
         if (ret == -ENOMEM) {
-            // LOG_WRN("esb_tx_fifo: queue full %d", que_was_fulled);
-
-            // *** deprecated pre-emptive queuing logic ***
-            // LOG_DBG("esb_tx_fifo: queue full, popping first message and queueing again");
-            // ret = esb_pop_tx();
-            // if (ret) {
-            //     LOG_ERR("esb_tx_fifo: popping first message and queueing failed (%d)", ret);
-            // }
-            // ret = esb_write_payload(&tx_payload);
-            // if (ret) {
-            //     LOG_ERR("esb_write_payload failed (%d)", ret);
-            // }
-
             // force dequeue, guarding for phantom PRX.
             que_was_fulled++;
             if (que_was_fulled >= ESB_TX_FIFO_REQUE_MAX) {
@@ -234,6 +272,8 @@ static int pull_packet_from_tx_msgq(void) {
                 LOG_ERR("esb_start_tx failed (%d)", esb_ret);
                 return esb_ret;
             }
+            esb_start_tx();
+            // dequeue FIFO msg
             k_msgq_get(&m_msgq_tx_payloads, &tx_payload, K_NO_WAIT);
             que_was_fulled = 0;
         }
@@ -266,10 +306,10 @@ int zmk_split_esb_set_enable(bool enabled) {
     }
 }
 
-int zmk_split_esb_send(app_esb_data_t *tx_packet) {
+int zmk_split_esb_send(app_esb_data_t *tx_packet, uint8_t pipe) {
     int ret = 0;
     struct esb_payload tx_payload;
-    tx_payload.pipe = 0;
+    tx_payload.pipe = pipe;
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ESB_PROTO_TX_ACK)
     tx_payload.noack = false;
 #else
@@ -281,18 +321,19 @@ int zmk_split_esb_send(app_esb_data_t *tx_packet) {
         LOG_WRN("bypass queuing null payload");
         return 0;
     }
-    ret = k_msgq_put(&m_msgq_tx_payloads, &tx_payload, K_NO_WAIT);
 
-    // *** deprecated pre-emptive queuing logic ***
-    // if (ret == -EAGAIN || ret == -ENOMSG) {
-    //     LOG_WRN("esb tx_payload_q full, popping first message and queueing again");
-    //     struct esb_payload dicarded_payload;
-    //     k_msgq_get(&m_msgq_tx_payloads, &dicarded_payload, K_NO_WAIT);
-    //     ret = k_msgq_put(&m_msgq_tx_payloads, &tx_payload, K_NO_WAIT);
-    // }
+    // Aggressive busy check - return early if radio is not idle
+    if (m_active && !esb_is_idle()) {
+        LOG_DBG("Radio busy, dropping packet");
+        m_stats.failed_transmissions++;
+        return -EBUSY;
+    }
+
+    ret = k_msgq_put(&m_msgq_tx_payloads, &tx_payload, K_NO_WAIT);
 
     if (ret != 0) {
         LOG_WRN("Failed to queue esb tx_payload_q (%d)", ret);
+        m_stats.failed_transmissions++;
     }
     if (m_active) {
         pull_packet_from_tx_msgq();
@@ -380,3 +421,21 @@ static int on_activity_state(const zmk_event_t *eh) {
 
 ZMK_LISTENER(zmk_split_esb_idle_sleeper, on_activity_state);
 ZMK_SUBSCRIPTION(zmk_split_esb_idle_sleeper, zmk_activity_state_changed);
+
+int zmk_split_esb_get_stats(esb_stats_t *stats) {
+    if (!stats) {
+        return -EINVAL;
+    }
+    memcpy(stats, &m_stats, sizeof(esb_stats_t));
+    return 0;
+}
+
+int zmk_split_esb_reset_stats(void) {
+    memset(&m_stats, 0, sizeof(esb_stats_t));
+    LOG_INF("ESB statistics reset");
+    return 0;
+}
+
+bool zmk_split_esb_is_ready(void) {
+    return m_active && m_enabled && esb_is_idle();
+}

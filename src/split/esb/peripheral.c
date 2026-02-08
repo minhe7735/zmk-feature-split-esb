@@ -137,6 +137,15 @@ split_peripheral_esb_report_event(const struct zmk_split_transport_peripheral_ev
     }
     // LOG_HEXDUMP_DBG(&postfix, sizeof(postfix), "postfix");
 
+    // Set pipe based on event type
+    // Keys/Battery: pipe = peripheral_id (0 or 1)
+    // Trackball/Sensor: pipe = peripheral_id + 2
+    bool is_pointing_event = (event->type == ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_INPUT_EVENT ||
+                              event->type == ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_SENSOR_EVENT);
+    
+    async_state.current_pipe = is_pointing_event ? 
+        (CONFIG_ZMK_SPLIT_ESB_PERIPHERAL_ID + 2) : CONFIG_ZMK_SPLIT_ESB_PERIPHERAL_ID;
+
     begin_tx();
 
     k_sem_give(&esb_send_evt_sem);

@@ -44,6 +44,22 @@ config ZMK_SPLIT_ESB_CMD_BUFFER_ITEMS
     int "Number of central commands to buffer for TX/RX"
     default 4
 
+config ZMK_SPLIT_ESB_TX_POWER_8DBM
+    bool "Use maximum TX power (8 dBm)"
+    default y
+    help
+        Enable maximum transmit power of 8 dBm for better range.
+        Disable to use the default TX power level.
+
+config ZMK_SPLIT_ESB_RF_CHANNEL
+    int "ESB RF channel"
+    default 2
+    range 0 100
+    help
+        RF channel for ESB communication (0-100).
+        Change this if you experience interference from other
+        2.4GHz devices. Each channel is 1MHz apart.
+
 module = ZMK_SPLIT_ESB
 module-str = ZMK_SPLIT_ESB
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"

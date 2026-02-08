@@ -47,6 +47,37 @@ int zmk_split_esb_init(app_esb_mode_t mode, app_esb_callback_t callback);
 
 int zmk_split_esb_set_enable(bool enabled);
 
-int zmk_split_esb_send(app_esb_data_t *tx_packet);
+int zmk_split_esb_send(app_esb_data_t *tx_packet, uint8_t pipe);
+
+
+/**
+ * ESB transmission statistics
+ */
+typedef struct {
+    uint32_t total_transmissions;
+    uint32_t successful_transmissions;
+    uint32_t failed_transmissions;
+    uint32_t retry_count;
+    float success_rate;
+    uint32_t last_tx_timestamp;
+    bool last_tx_succeeded;
+    uint32_t total_received;
+    uint32_t last_rx_timestamp;
+} esb_stats_t;
+
+/**
+ * Get current ESB statistics
+ */
+int zmk_split_esb_get_stats(esb_stats_t *stats);
+
+/**
+ * Reset ESB statistics
+ */
+int zmk_split_esb_reset_stats(void);
+
+/**
+ * Check if ESB is ready for transmission
+ */
+bool zmk_split_esb_is_ready(void);
 
 #endif
