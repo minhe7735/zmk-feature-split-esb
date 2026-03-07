@@ -107,8 +107,6 @@ static void event_handler(struct esb_evt const *event) {
             // LOG_DBG("RX SUCCESS");
             struct esb_payload rx_payload;
             while (esb_read_rx_payload(&rx_payload) == 0) {
-            uint8_t buf[CONFIG_ESB_MAX_PAYLOAD_LENGTH];
-            if (esb_read_rx_payload(&rx_payload) == 0) {
                 // Track RX stats
                 m_stats.total_received++;
                 m_stats.last_rx_timestamp = k_uptime_get_32();
@@ -272,8 +270,6 @@ static int pull_packet_from_tx_msgq(void) {
                 LOG_ERR("esb_start_tx failed (%d)", esb_ret);
                 return esb_ret;
             }
-            esb_start_tx();
-            // dequeue FIFO msg
             k_msgq_get(&m_msgq_tx_payloads, &tx_payload, K_NO_WAIT);
             que_was_fulled = 0;
         }
